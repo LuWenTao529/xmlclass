@@ -1,237 +1,243 @@
+import json
+import numpy as np
+import jsonlines
 import copy
-import sys
 from argparse import ArgumentParser
 from pathlib import Path
-
-import jsonlines
-import numpy as np
-from openai import OpenAI
+import sys
+import os
+os.environ.setdefault("USE_TF", "0")
 from sentence_transformers import SentenceTransformer, util
 
-CURRENT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_DIR.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
+from OpenWordMLTC.local_llm_utils import DEFAULT_MODEL, chat_completion, normalize_yes_no
 
 def call_gpt(ground_truth, prediction):
-    client = OpenAI()
     content = f"""Given that we have established matching pairs such as "\'Machine learning\' and \'artificial intelligence\'", 
     "\'Computational Geometry\' and \'Algebraic Geometry\'", "\'Physics and Society\' and \'Physics\'",
     "\'teether\' and \'baby_dental_care\'", "\'earn\' and \'earnings\'", "\'electrical_safety\' and \'electronics_troubleshooting\'", 
     "\'acq\' and \'acquisitions\'", "\'money-fx\' and \'monetary policy\'", when using util.dot_score to measure semantic similarity 
     between tokens, would you consider \'{ground_truth}\' and \'{prediction}\' as a matching pair in a text classification problem? 
     Please respond with \'Yes\' or \'No\'."""
-    completion = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "You are an expert in text classification, with specialized skills in discerning matching pairs for labels."},
+    result = chat_completion(
+        [
+            {
+                "role": "system",
+                "content": "You are an expert in text classification label matching. Answer only Yes or No.",
+            },
             {"role": "user", "content": content},
         ],
+        model=DEFAULT_MODEL,
+        temperature=0.0,
+        max_tokens=8,
     )
-    return str(completion.choices[0].message.content)
+    return normalize_yes_no(result)
 
+def run_test(args, model_type, array_size):
+    with jsonlines.open(f'{args.path}/{args.task}/{args.data_dir}/zero_shot_keyword_test_{model_type}.jsonl', 'r') as jsonl_f:
+        json_list = [obj for obj in jsonl_f]
+    with jsonlines.open(f'{args.path}/{args.task}/{args.data_dir}/zero_shot_text_test_{model_type}.jsonl', 'r') as jsonl_f:
+        json_raw_list = [obj for obj in jsonl_f]
 
-def load_jsonl_objects(path):
-    with jsonlines.open(path, "r") as jsonl_file:
-        return [obj for obj in jsonl_file]
+    file1 = open(f'{args.path}/{args.task}/{args.keyphrase_dir}', 'r')
+    keyword_docs = file1.readlines()
 
-
-def collect_grouped_indices(keyword_docs):
     count = 0
     for line in keyword_docs:
-        if int(line.split(": ")[0]) == 0:
-            count += 1
+        if int(line.split(': ')[0]) == 0:
+            count +=1
         else:
             break
 
     array_index_list = []
     iter_index = 0
-    new_array = list(range(count))
-    for index, row in enumerate(keyword_docs[count:], start=count):
-        document_index = int(row.strip().split(": ")[0])
-        if document_index != iter_index:
+    new_array = []
+    for ct in range(count):
+        new_array.append(ct)
+        
+    for i, row in enumerate(keyword_docs[count:]):
+        index = int(row.strip().split(': ')[0])
+        if index != iter_index:
             array_index_list.append((iter_index, new_array))
-            new_array = [index]
-            iter_index = document_index
+            new_array = [i+count]
+            iter_index = index
         else:
-            new_array.append(index)
+            new_array.append(i + count)
     array_index_list.append((iter_index, new_array))
-    return array_index_list
 
-
-def get_ranked_labels(prediction):
-    selected_labels = prediction.get("selected_labels")
-    if selected_labels:
-        return selected_labels
-    return prediction.get("labels", [])
-
-
-def get_ranked_scores(prediction):
-    selected_scores = prediction.get("selected_scores")
-    if selected_scores:
-        return selected_scores
-    return prediction.get("scores", [])
-
-
-def merge_prediction_lists(keyword_predictions, text_predictions, top_k):
-    merged_labels = []
-    label_vote_count = {}
-    label_best_score = {}
-    combined_predictions = keyword_predictions + text_predictions
-
-    for rank_index in range(top_k):
-        for prediction in combined_predictions:
-            labels = get_ranked_labels(prediction)
-            scores = get_ranked_scores(prediction)
-            if rank_index >= len(labels) or rank_index >= len(scores):
-                continue
-            label = labels[rank_index]
-            score = scores[rank_index]
-            label_vote_count[label] = label_vote_count.get(label, 0) + 1
-            label_best_score[label] = max(score, label_best_score.get(label, 0.0))
-
-        sorted_votes = sorted(label_vote_count.items(), key=lambda item: (item[1], label_best_score[item[0]]), reverse=True)
-        for label, _count in sorted_votes:
-            if label not in merged_labels:
-                merged_labels.append(label)
-                break
-    return merged_labels
-
-
-def parse_true_labels(args, filtered_index):
-    with open(Path(args.path) / args.task / "test_label.txt", "r", encoding="utf-8") as file:
-        documents = file.readlines()
-
-    true_label_array = []
-    for index in filtered_index:
-        true_label_list = []
-        row = documents[index].rstrip()
-        if args.task == "AAPD":
-            cleaned_row = row.rstrip(" ;")
-            label_list = [label for label in cleaned_row.split("; ") if label]
-            for label in label_list:
-                new_label = label.split(".", 1)[1] if "." in label else label
-                if new_label not in true_label_list:
-                    true_label_list.append(new_label)
-        else:
-            if args.task in {"Amazon-531", "DBPedia-298"}:
-                label_list = row.split(", ")
-            elif args.task == "Reuters-21578":
-                label_list = row.split(" ")
-            elif args.task == "RCV1":
-                label_list = row.split("; ")
-            else:
-                raise ValueError(f"Task not found: {args.task}")
-
-            for label in label_list:
-                cleaned = label.strip()
-                if cleaned and cleaned not in true_label_list:
-                    true_label_list.append(cleaned)
-        true_label_array.append(true_label_list)
-    return true_label_array
-
-
-def score_prediction_set(model, predict_labels, true_labels, use_gpt=False):
-    predict_labels = [label for label in predict_labels if label]
-    true_labels = copy.deepcopy(true_labels)
-    if not true_labels:
-        return 0.0
-
-    total_size = max(1, min(len(true_labels), len(predict_labels)))
-    count = 0
-    for pred_label in predict_labels:
-        if not true_labels:
-            break
-        query_embedding = model.encode(pred_label)
-        passage_embedding = model.encode(true_labels)
-        sim_score = util.dot_score(query_embedding, passage_embedding).numpy()[0]
-        best_index = int(np.argsort(sim_score)[-1])
-        best_score = sim_score[best_index]
-        if best_score >= 0.75:
-            count += 1
-            true_labels.pop(best_index)
-        elif use_gpt and best_score >= 0.5:
-            if call_gpt(true_labels[best_index], pred_label).strip().lower().startswith("yes"):
-                count += 1
-                true_labels.pop(best_index)
-    return count / total_size
-
-
-def run_test(args, model_type, array_size):
-    base_dir = Path(args.path) / args.task / args.data_dir
-    json_list = load_jsonl_objects(base_dir / f"zero_shot_keyword_test_{model_type}.jsonl")
-    json_raw_list = load_jsonl_objects(base_dir / f"zero_shot_text_test_{model_type}.jsonl")
-
-    with open(Path(args.path) / args.task / args.keyphrase_dir, "r", encoding="utf-8") as file:
-        keyword_docs = file.readlines()
-
-    array_index_list = collect_grouped_indices(keyword_docs)
-    eval_size = min(array_size, len(array_index_list))
-    filtered_index = [line[0] for line in array_index_list[:eval_size]]
+    filtered_index = []
+    for line in array_index_list[:array_size]:
+        filtered_index.append(line[0])
 
     merge_json_dic = {}
+    for line in array_index_list[:array_size]:
+        merge_json_dic[line[0]] = []
+        for index in line[1]:
+            merge_json_dic[line[0]].append(json_list[index])
+
     merge_json_raw_dic = {}
-    for line in array_index_list[:eval_size]:
-        merge_json_dic[line[0]] = [json_list[index] for index in line[1]]
-        merge_json_raw_dic[line[0]] = [json_raw_list[index] for index in line[1]]
+    for line in array_index_list[:array_size]:
+        merge_json_raw_dic[line[0]] = []
+        for index in line[1]:
+            merge_json_raw_dic[line[0]].append(json_raw_list[index])
 
     final_label_list = []
     for iteration, key in enumerate(merge_json_dic):
         print(iteration)
-        label_list = merge_prediction_lists(
-            merge_json_dic[key],
-            merge_json_raw_dic[key],
-            args.top_k,
-        )
+        label_list = []
+        keyword_rank_list = merge_json_dic[key]
+        text_rank_list = merge_json_raw_dic[key]
+        sum_rank_list = keyword_rank_list + text_rank_list
+        index_list = []
+        for i in range(len(sum_rank_list)):
+            index_list.append(i)
+        for i in range(8):
+            rank_dic = {}
+            score_dic = {}
+            for index in index_list:
+                label = sum_rank_list[index]['labels'][i]
+                score = sum_rank_list[index]['scores'][i]
+                if not label in rank_dic:
+                    rank_dic[label] = 1
+                    score_dic[label] = score
+                else:
+                    rank_dic[label] += 1
+                    if score > score_dic[label]:
+                        score_dic[label] = score
+            sorted_rank_dic = sorted(rank_dic.items(), key=lambda x:x[1], reverse = True)
+            if sorted_rank_dic[0][1] > 1:
+                best_key_list = [sorted_rank_dic[0][0]]
+                best_num = sorted_rank_dic[0][1]
+                for new_pair in sorted_rank_dic[1:]:
+                    if new_pair[1] == best_num:
+                        best_key_list.append(new_pair[0])
+                    else:
+                        break
+                new_score_list = {}
+                for best_key in best_key_list:
+                    new_score_list[best_key] = score_dic[best_key]
+                sorted_score_list = sorted(new_score_list.items(), key=lambda x:x[1], reverse = True)
+                for key in sorted_score_list:
+                    if not key[0] in label_list:
+                        label_list.append(key[0])
+            else:
+                sorted_score_list = sorted(score_dic.items(), key=lambda x:x[1], reverse = True)
+                best_key_list = [sorted_score_list[0][0]]
+                if not sorted_score_list[0][0] in label_list:
+                    label_list.append(sorted_score_list[0][0])
         final_label_list.append(label_list)
 
-    true_label_array = parse_true_labels(args, filtered_index)
-    model = SentenceTransformer(args.embedding_model, device=args.embedding_device)
+    file = open(f'{args.path}/{args.task}/test_label.txt', 'r')
+    documents = file.readlines() 
 
-    prob_array1 = np.zeros(eval_size)
-    prob_array3 = np.zeros(eval_size)
-    for index in range(eval_size):
-        prob_array1[index] = score_prediction_set(
-            model,
-            final_label_list[index][:1],
-            true_label_array[index],
-            use_gpt=args.use_gpt_match,
-        )
-        prob_array3[index] = score_prediction_set(
-            model,
-            final_label_list[index][:3],
-            true_label_array[index],
-            use_gpt=args.use_gpt_match,
-        )
-        print(index, prob_array1[index], prob_array3[index])
+    true_label_array = []
+    if args.task == 'AAPD':
+        for index in filtered_index:
+            true_label_list = []
+            label_list = documents[index][:-3].split('; ')
+            for label in label_list:
+                new_label = label.split('.')[1]
+                if not new_label in true_label_list:
+                    true_label_list.append(new_label)
+            true_label_array.append(true_label_list)
+    else:
+        for index in filtered_index:
+            true_label_list = []
+            if args.task == 'Amazon-531' or 'DBPedia-298':
+                label_list = documents[index][:-3].split(', ')
+            elif args.task == 'Reuters-21578':
+                label_list = documents[index][:-1].split(' ')
+            elif args.task == 'RCV1':
+                label_list = documents[index][:-3].split('; ')
+            for label in label_list:
+                new_label = label
+                if not new_label in true_label_list:
+                    true_label_list.append(new_label)
+            true_label_array.append(true_label_list)
 
-    answer1 = float(np.sum(prob_array1) / eval_size)
-    answer3 = float(np.sum(prob_array3) / eval_size)
+    
+    model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cuda')
 
-    with open(Path(args.path) / args.task / args.output_dir, "a", encoding="utf-8") as file:
-        file.write(f"{model_type} 1 {answer1}\n")
-        file.write(f"{model_type} 3 {answer3}\n")
+    
+    prob_array1 = np.zeros(array_size)
+    for i in range(array_size):
+        predict_labels = final_label_list[i][:1]
+        true_labels = copy.deepcopy(true_label_array[i])
+        #print(predict_labels)
+        #print(true_labels)
+        total_size = min(len(true_labels),1)
+        count = 0
+        for pred_label in predict_labels:
+            if len(true_labels) > 0:
+                query_embedding = model.encode(pred_label)
+                passage_embedding = model.encode(true_labels)
+                sim_score = util.dot_score(query_embedding, passage_embedding).numpy()[0]
+                #print(pred_label, sim_score)
+                rank_list = np.argsort(sim_score)
+                if sim_score[rank_list[-1]] >= 0.75:
+                    count += 1
+                    true_labels.pop(rank_list[-1])
+                elif sim_score[rank_list[-1]] >= 0.5:
+                    if call_gpt(true_labels[rank_list[-1]], pred_label) == 'Yes':
+                        count += 1
+                        true_labels.pop(rank_list[-1])
+        print(i, count)
+        prob_array1[i] = count / total_size 
+
+    answer1 = np.sum(prob_array1) / array_size
+
+    prob_array3 = np.zeros(array_size)
+    for i in range(array_size):
+        predict_labels = final_label_list[i][:3]
+        true_labels = copy.deepcopy(true_label_array[i])
+        #print(predict_labels)
+        #print(true_labels)
+        total_size = min(len(true_labels),3)
+        count = 0
+        for pred_label in predict_labels:
+            if len(true_labels) > 0:
+                query_embedding = model.encode(pred_label)
+                passage_embedding = model.encode(true_labels)
+                sim_score = util.dot_score(query_embedding, passage_embedding).numpy()[0]
+                #print(pred_label, sim_score)
+                rank_list = np.argsort(sim_score)
+                if sim_score[rank_list[-1]] >= 0.75:
+                    count += 1
+                    true_labels.pop(rank_list[-1])
+                elif sim_score[rank_list[-1]] >= 0.5:
+                    if call_gpt(true_labels[rank_list[-1]], pred_label) == 'Yes':
+                        count += 1
+                        true_labels.pop(rank_list[-1])
+        print(i, count)
+        prob_array3[i] = count / total_size 
+
+    answer3 = np.sum(prob_array3) / array_size
+    
+    with open(f'{args.path}/{args.task}/{args.output_dir}', 'a') as the_file:
+         the_file.write(f'{model_type} 1 {answer1} \n')
+         the_file.write(f'{model_type} 3 {answer3} \n')
 
 
 def main(args):
-    run_test(args, "deberta", args.test_size)
-    run_test(args, "bart", args.test_size)
-    run_test(args, "xlm", args.test_size)
+
+    run_test(args, 'deberta', args.test_size)
+    run_test(args, 'bart', args.test_size)
+    run_test(args, 'xlm', args.test_size)
+
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--path", type=str, default="../../datasets")
-    parser.add_argument("--data_dir", type=str, default="llama2/test_performance")
-    parser.add_argument("--keyphrase_dir", type=str, default="keyphrase_candidate/llama2_label_test_50.txt")
-    parser.add_argument("--task", type=str, default="AAPD")
+    parser.add_argument("--data_dir", type=str, default="deepseek_chat/test_performance")
+    parser.add_argument("--keyphrase_dir", type=str, default="deepseek_chat_label_test_50.txt")
+    parser.add_argument("--task", type=str, default='AAPD')
     parser.add_argument("--test_size", type=int, default=1000)
-    parser.add_argument("--output_dir", type=str, default="llama2/test_performance/MLClass_result.txt")
-    parser.add_argument("--top_k", type=int, default=8)
-    parser.add_argument("--embedding_model", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
-    parser.add_argument("--embedding_device", type=str, default="cuda")
-    parser.add_argument("--use_gpt_match", action="store_true")
+    parser.add_argument("--output_dir", type=str, default="deepseek_chat/test_performance/MLClass_result.txt")
     args = parser.parse_args()
 
     main(args)

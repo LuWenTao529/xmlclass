@@ -10,9 +10,10 @@ conda create -n X-MLClass python=3.9
 conda activate X-MLClass
 python -m pip install -r requirements.txt
 ```
-If you need to use OpenAI APIs, you will need to obtain an API key [here](https://beta.openai.com/). 
+The label generation stages now use a local Hugging Face model by default.
 ```
-export OPENAI_API_KEY=[your OpenAI API Key]
+pip install bitsandbytes
+set HF_ENABLE_THINKING=false
 ```
 
 ## Dataset
@@ -36,12 +37,22 @@ CUDA_VISIBLE_DEVICES=... python llama_keyword.py \
     --path ./datasets \
     --data_dir train_texts_split_50.txt \
     --task AAPD \
-    --batch_size 32 \
-    --model meta-llama/Llama-2-13b-chat-hf \
-    --output_dir llama_label2_50.txt
+    --batch_size 1 \
+    --model Qwen/Qwen3-8B \
+    --output_dir deepseek_chat_label_50.txt
 ``` 
+To prepare the evaluation pipeline, generate test-set keyphrases as well:
+```
+CUDA_VISIBLE_DEVICES=... python llama_keyword.py \
+    --path ./datasets \
+    --data_dir test_texts_split_50.txt \
+    --task AAPD \
+    --batch_size 1 \
+    --model Qwen/Qwen3-8B \
+    --output_dir keyphrase_candidate/deepseek_chat_label_test_50.txt
+```
 
-To generate the initial label space, use the following command. The output will be saved in `llama2/init_label_space.txt`
+To generate the initial label space, use the following command. The output will be saved in `deepseek_chat/init_label_space.txt`
 ```
 cd OpenWordMLTC/keyword_generator
 bash label_space_construct.sh
@@ -61,9 +72,9 @@ cd OpenWordMLTC/self_training
 CUDA_VISIBLE_DEVICES=... python self_training.py \
     --path ../../datasets \
     --data_dir train_texts_split_50.txt \ 
-    --keyphrase_dir llama2_label_50.txt\
+    --keyphrase_dir deepseek_chat_label_50.txt\
     --task AAPD \
-    --llama_model llama2 \
+    --llama_model deepseek_chat \
     --tail_set_size 500 \
     --majority_num 350 \
     --max_majority_num 5 \
@@ -71,4 +82,4 @@ CUDA_VISIBLE_DEVICES=... python self_training.py \
     --max_add_label 10 \
     --model MoritzLaurer/deberta-v3-large-zeroshot-v1.1-all-33
 ```
-The improved label space is stored in `llama2/result/update_labelspace.txt`
+The improved label space is stored in `deepseek_chat/result/update_labelspace.txt`

@@ -1,132 +1,103 @@
-import os
-import re
-import sys
 from argparse import ArgumentParser
 from pathlib import Path
+import sys
+
+import os
+
+os.environ.setdefault("USE_TF", "0")
 
 import numpy as np
-from openai import OpenAI
-from sentence_transformers import SentenceTransformer
-
-CURRENT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_DIR.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-from label_space_utils import merge_label_records, parse_label_source_line, save_label_records
+from sentence_transformers import SentenceTransformer, util
 
 
-def extract_delete_label(answer_text):
-    quoted_match = re.findall(r'"([^"]+)"', answer_text)
-    if quoted_match:
-        return quoted_match[-1].strip()
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 
-    if "yes" not in answer_text.lower():
-        return ""
-
-    cleaned = answer_text.replace("\n", " ").replace(",", " ").replace(".", " ")
-    parts = [part for part in cleaned.split() if part]
-    if "Yes" in parts:
-        yes_index = parts.index("Yes")
-        return parts[yes_index + 1].strip() if yes_index + 1 < len(parts) else ""
-    if "yes" in parts:
-        yes_index = parts.index("yes")
-        return parts[yes_index + 1].strip() if yes_index + 1 < len(parts) else ""
-    return ""
+from OpenWordMLTC.local_llm_utils import DEFAULT_MODEL, chat_completion
 
 
-def find_redundant_pairs(model, label_records, lower_bound):
-    label_names = [record["name"] for record in label_records]
-    embeddings = model.encode(label_names, convert_to_numpy=True)
-    sim_matrix = np.matmul(embeddings, embeddings.T)
-    redundant_pairs = []
-
-    for index, sim_scores in enumerate(sim_matrix):
-        for other_index in range(index + 1, len(sim_scores)):
-            score = float(sim_scores[other_index])
-            if lower_bound < score < 0.99:
-                redundant_pairs.append(
-                    [
-                        index,
-                        label_names[index],
-                        other_index,
-                        label_names[other_index],
-                        score,
-                    ]
-                )
-    return redundant_pairs
-
-
-def ask_llm_to_prune(similar_pairs):
-    if not similar_pairs or not os.getenv("OPENAI_API_KEY"):
-        return []
-
-    client = OpenAI()
-    answers = []
-    for label_candidate in similar_pairs:
-        content = (
-            f'Do labels "{label_candidate[1]}" and "{label_candidate[3]}" have similar meanings '
-            "in general so that only one should remain in the label space? Reply Yes or No. "
-            'If Yes, also output the label to delete using the format "label".'
-        )
-        completion = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You help clean semantic label spaces and return short, precise answers.",
-                },
-                {"role": "user", "content": content},
-            ],
-        )
-        result = completion.choices[0].message.content or ""
-        answers.append([label_candidate[1], label_candidate[3], label_candidate[4], result])
-        print(label_candidate[1], label_candidate[3], label_candidate[4], result)
-
-    redundant_labels = [answer for answer in answers if "yes" in answer[3].lower()]
-    delete_list = []
-    while redundant_labels:
-        redundant = redundant_labels.pop(0)
-        delete_label = extract_delete_label(redundant[3])
-        if not delete_label:
-            continue
-        redundant_labels = [
-            label for label in redundant_labels if label[0] != delete_label and label[1] != delete_label
-        ]
-        delete_list.append(delete_label)
-    return delete_list
-
-
-def load_source_records(input_path):
-    with open(input_path, "r", encoding="utf-8") as file:
-        source_records = [parse_label_source_line(line) for line in file]
-    return merge_label_records(source_records)
+def choose_label_to_delete(label_a, label_b, model_name):
+    content = (
+        f'Label A: "{label_a}"\n'
+        f'Label B: "{label_b}"\n'
+        "Do these two labels have sufficiently similar meanings that only one should remain in the label space? "
+        "If yes, delete the narrower or lower-level label.\n"
+        'Respond with exactly one line in one of these formats:\n'
+        "No\n"
+        'Yes | <label-to-delete>'
+    )
+    result = chat_completion(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert in text classification label-space design. "
+                    "Follow the required output format exactly."
+                ),
+            },
+            {"role": "user", "content": content},
+        ],
+        model=model_name,
+        temperature=0.0,
+        max_tokens=32,
+    )
+    print(label_a, label_b, result)
+    if not result.lower().startswith("yes"):
+        return None
+    if "|" in result:
+        return result.split("|", 1)[1].strip().strip('"').strip(".")
+    return None
 
 
 def main(args):
-    input_path = Path(args.path) / args.task / args.data_dir
+    with open(f"{args.path}/{args.task}/{args.data_dir}", "r", encoding="utf-8") as handle:
+        documents = handle.readlines()
+
+    org_class = []
+    for row in documents:
+        label = row.split(";")[0].strip()
+        if label and label not in org_class:
+            org_class.append(label)
+
+    model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    sim_matrix = np.empty((0, len(org_class)))
+    for label in org_class:
+        query_embedding = model.encode(label)
+        passage_embedding = model.encode(org_class)
+        sim_matrix = np.append(sim_matrix, util.dot_score(query_embedding, passage_embedding).numpy(), 0)
+
+    sim_list = []
+    for i, sim_score in enumerate(sim_matrix):
+        for j in range(len(sim_score)):
+            if sim_score[j] > args.lower_bound and sim_score[j] < 0.99 and i < j:
+                sim_list.append([org_class[i], org_class[j], sim_score[j]])
+
+    delete_list = []
+    for left_label, right_label, _ in sim_list:
+        delete_label = choose_label_to_delete(left_label, right_label, args.model)
+        if delete_label:
+            delete_list.append(delete_label)
+
+    for label in delete_list:
+        if label in org_class:
+            org_class.remove(label)
+
     output_path = Path(args.path) / args.task / args.output_dir
-
-    label_records = load_source_records(input_path)
-    for record in label_records:
-        print(record["name"])
-
-    model = SentenceTransformer(args.embedding_model)
-    similar_pairs = find_redundant_pairs(model, label_records, args.lower_bound)
-    delete_list = set(ask_llm_to_prune(similar_pairs))
-    final_records = [record for record in label_records if record["name"] not in delete_list]
-
-    save_label_records(final_records, output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as writer:
+        for label in org_class:
+            writer.write(label + "\n")
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--path", type=str, default="../../datasets")
-    parser.add_argument("--data_dir", type=str, default="llama2/init_labelspace.txt")
+    parser.add_argument("--data_dir", type=str, default="deepseek_chat/init_labelspace.txt")
     parser.add_argument("--task", type=str, default="AAPD")
     parser.add_argument("--lower_bound", type=float, default=0.80)
-    parser.add_argument("--embedding_model", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
-    parser.add_argument("--output_dir", type=str, default="llama2/init_label_space.txt")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
+    parser.add_argument("--output_dir", type=str, default="deepseek_chat/init_label_space.txt")
     args = parser.parse_args()
 
     main(args)

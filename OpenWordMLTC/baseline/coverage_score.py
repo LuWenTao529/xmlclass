@@ -1,27 +1,37 @@
 import os
+os.environ.setdefault("USE_TF", "0")
 import numpy as np
 from argparse import ArgumentParser
+from pathlib import Path
+import sys
 from sentence_transformers import SentenceTransformer, util
-from openai import OpenAI
+
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
+from OpenWordMLTC.local_llm_utils import chat_completion
 
 
 def call_gpt(ground_truth, prediction):
-    client = OpenAI()
     content = f"""Given that we have established matching pairs such as "\'Machine learning\' and \'artificial intelligence\'", 
     "\'Computational Geometry\' and \'Algebraic Geometry\'", "\'Physics and Society\' and \'Physics\'",
     "\'teether\' and \'baby_dental_care\'", "\'earn\' and \'earnings\'", "\'electrical_safety\' and \'electronics_troubleshooting\'", 
     "\'acq\' and \'acquisitions\'", "\'money-fx\' and \'monetary policy\'", when using util.dot_score to measure semantic similarity 
     between tokens, would you consider \'{ground_truth}\' and \'{prediction}\' as a matching pair in a text classification problem? 
     Please respond with \'Yes\' or \'No\'."""
-    completion = client.chat.completions.create(
-        # model="gpt-4-turbo-preview",
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "You are an expert in text classification, with specialized skills in discerning matching pairs for labels."},
-            {"role": "user", "content": content }
-        ]
+    return chat_completion(
+        [
+            {
+                "role": "system",
+                "content": "You are an expert in text classification label matching. Answer only Yes or No.",
+            },
+            {"role": "user", "content": content},
+        ],
+        temperature=0.0,
+        max_tokens=8,
     )
-    return str(completion.choices[0].message.content)
 
 def get_ground_truth(args):
     if args.task == 'AAPD':
@@ -106,7 +116,7 @@ def main(args):
     sorted_pair_list = sorted(pair_list, key=lambda x: x[1], reverse = True)
 
     refine_pair_list = []
-    with open(f'{args.path}/{args.task}/llama3/result/gpt_result.txt', 'w') as file:
+    with open(f'{args.path}/{args.task}/deepseek_chat/result/gpt_result.txt', 'w') as file:
 
 
         while len(sorted_pair_list) > 0:
@@ -135,7 +145,7 @@ def main(args):
                     sorted_pair_list = [p for p in sorted_pair_list if ground_truth not in p[0] and prediction not in p[0]]
                     continue
         
-    with open(f'{args.path}/{args.task}/llama3/result/output_pairs.txt', 'w') as file:
+    with open(f'{args.path}/{args.task}/deepseek_chat/result/output_pairs.txt', 'w') as file:
         #file.write( '*********' + args.model + '***************' + '\n')
 
         for item in refine_pair_list:
@@ -153,7 +163,7 @@ def main(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--path", type=str, default="../../datasets")
-    parser.add_argument("--data_dir", type=str, default="llama3/result")
+    parser.add_argument("--data_dir", type=str, default="deepseek_chat/result")
     parser.add_argument("--task", type=str, default='AAPD')
     parser.add_argument("--model", type=str, default="pke")
     parser.add_argument("--output_dir", type=str, default="llama_label3_50.txt")

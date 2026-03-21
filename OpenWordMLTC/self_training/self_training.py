@@ -1,400 +1,292 @@
 import json
-import math
-import sys
-from argparse import ArgumentParser
-from pathlib import Path
-
-import jsonlines
 import numpy as np
-from sentence_transformers import SentenceTransformer
+import os
+os.environ.setdefault("USE_TF", "0")
+from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
-
-CURRENT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_DIR.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-from label_space_utils import (
-    build_cache_key,
-    build_label_record,
-    get_label_texts,
-    load_label_records,
-    load_or_create_embeddings,
-    rank_candidate_records,
-    resolve_run_dir,
-    save_label_records,
-    summarize_scores,
-)
+from argparse import ArgumentParser
+import jsonlines
 
 
-def get_pipeline_device(device_name):
-    return 0 if str(device_name).startswith("cuda") else -1
+def label_deletion(major_label_list, text_label_dic, majority_num, max_majority_num = 5):
+    for i, label_pair in enumerate(text_label_dic):
+        if label_pair[1] > majority_num and i < max_majority_num:
+            major_label_list.append(label_pair[0])
 
-
-def get_result_dir(args):
-    return resolve_run_dir(
-        Path(args.path) / args.task / args.llama_model / args.result_dir,
-        args.run_name,
-    )
-
-
-def label_space_file(result_dir, index=None):
-    file_name = "update_labelspace.txt" if index is None else f"update_labelspace{index}.txt"
-    return result_dir / file_name
-
-
-def prediction_file(result_dir, index):
-    return result_dir / f"zero_shot_text_train{index}.jsonl"
-
-
-def append_log_line(path, payload):
-    with path.open("a", encoding="utf-8") as file:
-        file.write(f"{payload}\n")
-
-
-def initialize_label_space_files(args, result_dir):
-    latest_path = label_space_file(result_dir)
-    initial_path = label_space_file(result_dir, 0)
-    if initial_path.exists():
-        return
-    if latest_path.exists():
-        save_label_records(load_label_records(latest_path), initial_path)
-        return
-    raise FileNotFoundError(
-        f"Missing initial label space. Expected {latest_path} or {initial_path}."
-    )
-
-
-def read_label_space_records(result_dir, index=None):
-    return load_label_records(label_space_file(result_dir, index))
-
-
-def write_label_space_records(result_dir, records, index=None):
-    save_label_records(records, label_space_file(result_dir, index))
-
-
-def get_selected_labels(prediction):
-    labels = prediction.get("selected_labels")
-    if labels:
-        return labels
-    return prediction.get("labels", [])[:1]
-
-
-def zero_shot_training(args, result_dir, iter_index, file_name, doc_size):
-    label_records = read_label_space_records(result_dir, iter_index + 1)
-    label_path = label_space_file(result_dir, iter_index + 1)
-    label_texts = get_label_texts(label_records)
-
-    retrieval_model = SentenceTransformer(args.embedding_model, device=args.embedding_device)
-    label_embeddings = load_or_create_embeddings(
-        retrieval_model,
-        label_texts,
-        result_dir / "cache",
-        build_cache_key(label_path, args.embedding_model),
-        batch_size=args.embedding_batch_size,
-    )
-
-    with open(Path(args.path) / args.task / file_name, "r", encoding="utf-8") as file:
-        docs = file.readlines()[:doc_size]
-
-    zstc = pipeline("zero-shot-classification", model=args.model, device=get_pipeline_device(args.classifier_device))
-    with prediction_file(result_dir, iter_index + 1).open("w", encoding="utf-8") as file:
-        for index, raw_doc in enumerate(docs):
-            print(index)
-            sentence = raw_doc.strip()
-            query_embedding = retrieval_model.encode(sentence, convert_to_numpy=True)
-            ranked_candidates = rank_candidate_records(
-                query_embedding,
-                label_records,
-                label_embeddings,
-                args.top_k,
-            )
-            candidate_records = [record for record, _score in ranked_candidates]
-            candidate_texts = [record["prototype_text"] for record in candidate_records]
-            candidate_mapping = {record["prototype_text"]: record["name"] for record in candidate_records}
-
-            output = zstc(
-                sentence,
-                candidate_texts,
-                hypothesis_template=args.hypothesis_template,
-                multi_label=True,
-            )
-            ranked_labels = [candidate_mapping[label] for label in output["labels"]]
-            ranked_scores = [float(score) for score in output["scores"]]
-            selected_labels, selected_scores = select_output_labels(
-                ranked_labels,
-                ranked_scores,
-                args.score_threshold,
-                args.relative_threshold,
-                args.max_output_labels,
-            )
-            result = {
-                "labels": ranked_labels,
-                "scores": ranked_scores,
-                "selected_labels": selected_labels,
-                "selected_scores": selected_scores,
-                "candidate_texts": output["labels"],
-                "input_text": sentence,
-            }
-            print(result)
-            json.dump(result, file, ensure_ascii=False)
-            file.write("\n")
-
-
-def select_output_labels(labels, scores, score_threshold, relative_threshold, max_output_labels):
-    if not labels:
-        return [], []
-
-    top_score = scores[0]
-    selected_labels = []
-    selected_scores = []
-    for label, score in zip(labels, scores):
-        if score < score_threshold:
-            continue
-        if relative_threshold >= 0 and (top_score - score) > relative_threshold:
-            continue
-        selected_labels.append(label)
-        selected_scores.append(score)
-        if len(selected_labels) >= max_output_labels:
-            break
-
-    if not selected_labels:
-        return [labels[0]], [scores[0]]
-    return selected_labels, selected_scores
-
-
-def label_deletion(major_label_list, text_label_dic, majority_num, max_majority_num=5):
-    for label, count in text_label_dic:
-        if count > majority_num and label not in major_label_list and len(major_label_list) < max_majority_num:
-            major_label_list.append(label)
     return major_label_list
+    
+def read_label_space(args):
+    file = open(f'{args.path}/{args.task}/{args.llama_model}/result/update_labelspace.txt', 'r')
+    documents = file.readlines()  
 
+    label_space = []
+    for row in documents:
+        label = row.strip()
+        label_space.append(label)
+    return label_space
 
-def load_predictions(path):
-    with jsonlines.open(path, "r") as jsonl_file:
-        return [obj for obj in jsonl_file]
+def read_cur_label_space(args, index):
+    file = open(f'{args.path}/{args.task}/{args.llama_model}/result/update_labelspace{index}.txt', 'r')
+    documents = file.readlines()  
 
+    label_space = []
+    for row in documents:
+        label = row.strip()
+        label_space.append(label)
+    return label_space
 
-def compute_uncertainty(prediction, entropy_top_k):
-    scores = prediction.get("scores", [])[:entropy_top_k]
-    if not scores:
-        return 0.0
-    metrics = summarize_scores(scores)
-    max_entropy = math.log(max(2, len(scores)))
-    normalized_entropy = metrics["entropy"] / max_entropy if max_entropy else 0.0
-    return (
-        (1.0 - metrics["top1"]) * 0.5
-        + (1.0 - max(metrics["margin"], 0.0)) * 0.3
-        + normalized_entropy * 0.2
-    )
+def write_to_label_space(args, label_space):
+    if os.path.exists(f'{args.path}/{args.task}/{args.llama_model}/result/update_labelspace.txt'):
+        os.remove(f'{args.path}/{args.task}/{args.llama_model}/result/update_labelspace.txt')
 
+    with open(f'{args.path}/{args.task}/{args.llama_model}/result/update_labelspace.txt', 'a') as the_file:
+        for label in label_space:
+            the_file.write(label + '\n')
 
-def collect_keyword_groups(keyword_docs):
-    groups = {}
-    for index, row in enumerate(keyword_docs):
-        label_id = int(row.split(": ")[0])
-        groups.setdefault(label_id, []).append(index)
-    return groups
+def write_to_new_label_space(args, label_space, iter_index):
+    with open(f'{args.path}/{args.task}/{args.llama_model}/result/update_labelspace{iter_index+1}.txt', 'a') as the_file:
+        for label in label_space:
+            the_file.write(label + '\n')
 
+def zero_shot_training(args, iter_index, file_name, doc_size):
+    file1 = open(f'{args.path}/{args.task}/{args.llama_model}/result/update_labelspace{iter_index +1}.txt', 'r')
+    documents = file1.readlines()  
 
-def normalize_keyword(keyword):
-    cleaned = keyword.strip()
-    if cleaned.startswith("["):
-        cleaned = cleaned[1:]
-    if cleaned.endswith("]"):
-        cleaned = cleaned[:-1]
-    return cleaned.strip()
+    label_space = []
+    for row in documents:
+        label = row.strip()
+        label_space.append(label)
 
+    model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device = 'cuda')
 
-def collect_candidate_labels(keyword_docs, uncertain_doc_indices, min_uncertain_support):
-    groups = collect_keyword_groups(keyword_docs)
-    group_support = {}
-    global_frequency = {}
+    file2 = open(f'{args.path}/{args.task}/{file_name}', 'r')
+    docs = file2.readlines()[:doc_size]
 
-    for row in keyword_docs:
-        for keyword in row.strip().split(": ", 1)[1].split(", "):
-            normalized = normalize_keyword(keyword)
-            global_frequency[normalized] = global_frequency.get(normalized, 0) + 1
+    top_labels = []
+    for i, doc in enumerate(docs):
+        print(i)
+        query_embedding = model.encode(doc)
+        passage_embedding = model.encode(label_space)
+        sim_scores = util.dot_score(query_embedding, passage_embedding)[0].numpy()
+        rank_list = np.argsort(sim_scores)[-8:]
+        exp_label = []
+        for index in rank_list:
+            exp_label.append(label_space[index])
+        top_labels.append(exp_label)
 
-    for doc_index in sorted(set(uncertain_doc_indices)):
-        group_indices = groups.get(doc_index, [])
-        group_keywords = set()
-        for row_index in group_indices:
-            keywords = keyword_docs[row_index].strip().split(": ", 1)[1].split(", ")
-            for keyword in keywords[:3]:
-                normalized = normalize_keyword(keyword)
-                if normalized:
-                    group_keywords.add(normalized)
-        for keyword in group_keywords:
-            group_support[keyword] = group_support.get(keyword, 0) + 1
+    print("pass")
 
-    filtered_keywords = []
-    for keyword, support_count in sorted(group_support.items(), key=lambda item: (-item[1], item[0])):
-        if support_count >= min_uncertain_support:
-            filtered_keywords.append((keyword, support_count, global_frequency.get(keyword, 0)))
-    return filtered_keywords
+    zstc = pipeline("zero-shot-classification", model= args.model, device = 'cuda')
+    template = "This example is {}"
 
+    with open(f'{args.path}/{args.task}/{args.llama_model}/result/zero_shot_text_train{iter_index+1}.jsonl', 'w') as f:
+        for i, doc in enumerate(docs):
+            sentence = doc.strip()
+            output = zstc(sentence, top_labels[i], hypothesis_template=template, multi_label=False)
+            del output["sequence"]
+            print(output)
+            json.dump(output, f)
+            f.write('\n')
 
-def filter_new_labels(args, result_dir, candidate_keywords, current_records):
-    if not candidate_keywords:
-        return []
+def string_edit(key):
+    if key[0] == '[':
+        key = key[1:]
+    if key[-1] == ']':
+        key = key[:-1]
+    return key
 
-    model = SentenceTransformer(args.embedding_model, device=args.embedding_device)
-    candidate_names = [item[0] for item in candidate_keywords if item[2] >= args.min_global_frequency]
-    if not candidate_names:
-        return []
+def self_training(args, iter_index):
+    with jsonlines.open(f'{args.path}/{args.task}/{args.llama_model}/result/zero_shot_text_train{iter_index}.jsonl', 'r') as jsonl_f:
+        json_raw_list = [obj for obj in jsonl_f] 
 
-    candidate_embeddings = model.encode(candidate_names, convert_to_numpy=True)
-    kept_candidates = []
-    kept_embeddings = []
-    for index, candidate_name in enumerate(candidate_names):
-        candidate_embedding = candidate_embeddings[index]
-        if kept_embeddings:
-            pair_scores = np.dot(np.asarray(kept_embeddings), candidate_embedding)
-            if float(np.max(pair_scores)) >= args.internal_dedup_threshold:
-                continue
-        kept_candidates.append(candidate_name)
-        kept_embeddings.append(candidate_embedding)
+    acc_list_raw = np.zeros(len(json_raw_list))
+    for i in range(len(json_raw_list)):
+        acc_list_raw[i] = json_raw_list[i]['scores'][0]   
 
-    if not kept_candidates:
-        return []
+    rank_list = np.argsort(acc_list_raw)[:args.tail_set_size]
 
-    label_embeddings = load_or_create_embeddings(
-        model,
-        get_label_texts(current_records),
-        result_dir / "cache",
-        build_cache_key(label_space_file(result_dir), args.embedding_model),
-        batch_size=args.embedding_batch_size,
-    )
+    file1 = open(f'{args.path}/{args.task}/{args.keyphrase_dir}', 'r')
+    keyword_docs = file1.readlines()[:len(json_raw_list)]
+    total_word_list = []
+    for i, row in enumerate(keyword_docs):
+        cur_list = row.strip().split(": ")[1].split(', ')
+        total_word_list.extend(cur_list) 
+
+    tail_array = []
+    for index in rank_list:
+        label = int(keyword_docs[index].split(': ')[0])
+        cur_index = index
+        row = [index]
+        while int(keyword_docs[cur_index - 1].split(': ')[0]) == label:
+            cur_index -= 1
+            row.append(cur_index)
+        cur_index = index
+        while (cur_index < (len(keyword_docs)-1)) and (int(keyword_docs[cur_index + 1].split(': ')[0]) == label):
+            cur_index += 1
+            row.append(cur_index)
+        tail_array.append(row)
+
+    select_tail_array = tail_array
+    # select_tail_array = []
+    # for example in tail_array:
+    #     flag = 1
+    #     for node in example:
+    #         if json_raw_list[node]['scores'][0] > 0.64:
+    #             flag = 0
+    #     if flag == 1:
+    #         select_tail_array.append(example)
+
+    keyword_dic = {}
+    keyword_list = []
+    for index_list in select_tail_array:
+        label_doc = keyword_docs[index_list[0]]
+        for keyword in label_doc.strip().split(': ')[1].split(', ')[:3]:
+            keyword_list.append(keyword)
+            count = 0
+            if len(index_list) > 1:
+                for index in index_list[1:]:
+                    test_label_doc = keyword_docs[index]
+                    test_keyword_list = test_label_doc.strip().split(': ')[1].split(', ')
+                    if keyword in test_keyword_list:
+                        count +=1
+        #keyword_dic[index_list[0]] = (keyword,count)
+            if keyword in keyword_dic:
+                if count > keyword_dic[keyword]:
+                    keyword_dic[keyword] = count
+            else:
+                keyword_dic[keyword] = count
+
+    add_label = []
+    for key in keyword_dic:
+        count = 0
+        for node in total_word_list:
+            if string_edit(node) == string_edit(key):
+                count +=1
+        if count - keyword_dic[key] >= 15:
+            add_label.append(string_edit(key))
+
+    model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device = 'cuda')
+    sim_matrix = np.empty((0,len(add_label)))
+    for i in range(len(add_label)):
+        query_embedding = model.encode(add_label[i])
+        passage_embedding = model.encode(add_label)
+        sim_matrix = np.append(sim_matrix, util.dot_score(query_embedding, passage_embedding).numpy(), 0)
+    
+    sim_list = []
+    deleted_list = []
+    for i, sim_score in enumerate(sim_matrix):
+        for j in range(len(sim_score)):
+            if sim_score[j] > (args.sim_threshold + iter_index / 100)  and sim_score[j] < 1.1:
+                if i < j:
+                    sim = [i, add_label[i], j , add_label[j], sim_score[j]]
+                    sim_list.append(sim)
+                    if not add_label[i] in deleted_list:
+                        deleted_list.append(add_label[i])
+    for label in deleted_list:
+        add_label.remove(label)
+
+    predict_label_space = read_label_space(args)
+
+    passage_embedding = model.encode(predict_label_space)
+    final_sim_matrix = np.empty((0,len(predict_label_space)))
+    for i in range(len(add_label)):
+        query_embedding = model.encode(add_label[i])
+        final_sim_matrix = np.append(final_sim_matrix, util.dot_score(query_embedding, passage_embedding).numpy(), 0)
+
+    final_sim_list = []
+    for i, sim_score in enumerate(final_sim_matrix):
+        rank_list = np.argsort(sim_score)[-3:]
+        cur_list = [add_label[i]]
+        for index in rank_list:
+            cur_list.append((sim_score[index], predict_label_space[index]))
+        final_sim_list.append(cur_list)
 
     final_add_label = []
-    candidate_embeddings = model.encode(kept_candidates, convert_to_numpy=True)
-    for index, candidate_name in enumerate(kept_candidates):
-        similarity_scores = np.dot(label_embeddings, candidate_embeddings[index])
-        if float(np.max(similarity_scores)) < args.sim_threshold:
-            final_add_label.append(candidate_name)
-        if len(final_add_label) >= args.max_add_label:
-            break
-    return final_add_label
+    for row in final_sim_list:
+        if row[3][0] < (args.sim_threshold + iter_index / 100) :
+            final_add_label.append(row[0])
+    return final_add_label[:args.max_add_label]
 
-
-def self_training(args, result_dir, iter_index):
-    predictions = load_predictions(prediction_file(result_dir, iter_index))
-    uncertainty_scores = np.asarray(
-        [compute_uncertainty(prediction, args.entropy_top_k) for prediction in predictions],
-        dtype=float,
-    )
-    rank_list = np.argsort(uncertainty_scores)[-args.tail_set_size:][::-1]
-
-    with open(Path(args.path) / args.task / args.keyphrase_dir, "r", encoding="utf-8") as file:
-        keyword_docs = file.readlines()[: len(predictions)]
-
-    uncertain_doc_indices = []
-    for index in rank_list:
-        doc_index = int(keyword_docs[index].split(": ")[0])
-        uncertain_doc_indices.append(doc_index)
-
-    current_records = read_label_space_records(result_dir)
-    candidate_keywords = collect_candidate_labels(
-        keyword_docs,
-        uncertain_doc_indices,
-        args.min_uncertain_support,
-    )
-    return filter_new_labels(args, result_dir, candidate_keywords, current_records)
-
+    
 
 def main(args):
-    print(
-        args.tail_set_size,
-        args.majority_num,
-        args.max_majority_num,
-        args.sim_threshold,
-        args.max_add_label,
-    )
-    result_dir = get_result_dir(args)
-    initialize_label_space_files(args, result_dir)
-
+    print(args.tail_set_size, args.majority_num, args.max_majority_num, args.sim_threshold, args.max_add_label)
     major_label_list = []
-    for iter_index in range(args.max_iterations):
-        current_prediction_path = prediction_file(result_dir, iter_index)
-        if not current_prediction_path.exists():
-            raise FileNotFoundError(f"Missing prediction file: {current_prediction_path}")
+    for iter_index in range(10):
 
-        json_raw_list = load_predictions(current_prediction_path)
+        with jsonlines.open(f'{args.path}/{args.task}/{args.llama_model}/result/zero_shot_text_train{iter_index}.jsonl', 'r') as jsonl_f:
+            json_raw_list = [obj for obj in jsonl_f]
+
+        acc_list_raw = np.zeros(len(json_raw_list))
+        label_list_raw = []
+        for i in range(len(json_raw_list)):
+            acc_list_raw[i] = json_raw_list[i]['scores'][0]
+            label_list_raw.append(json_raw_list[i]['labels'][0]) 
         document_size = len(json_raw_list)
-        label_space_records = read_label_space_records(result_dir)
-        cur_label_space_records = read_label_space_records(result_dir, iter_index)
 
-        text_label_dic = {record["name"]: 0 for record in cur_label_space_records}
-        for prediction in json_raw_list:
-            for label in get_selected_labels(prediction):
-                if label in text_label_dic:
-                    text_label_dic[label] += 1
+        #new label space
+        label_space = read_label_space(args)
+        cur_label_space = read_cur_label_space(args, iter_index)
 
-        text_sorted_dic = sorted(text_label_dic.items(), key=lambda item: item[1], reverse=True)
+        text_label_dic = {item: 0 for item in cur_label_space}
+        for label in label_list_raw:
+            text_label_dic[label] += 1
+
+        # keyword_sorted_dic = sorted(keyword_label_dic.items(), key=lambda x:x[1], reverse = True)
+        text_sorted_dic = sorted(text_label_dic.items(), key=lambda x:x[1], reverse = True)            
+
+        #delete minority label
         remove_key_list = []
-        remaining_records = []
-        for record in label_space_records:
-            count = text_label_dic.get(record["name"], 0)
-            if count <= args.min_label_frequency:
-                print(record["name"])
-                remove_key_list.append(record["name"])
-            else:
-                remaining_records.append(record)
+        for key in text_label_dic:
+            if (text_label_dic[key] <= 6) and (key in label_space):
+                print(key)
+                remove_key_list.append(key)
+                label_space.remove(key)
+        
+        write_to_label_space(args, label_space)
 
-        write_label_space_records(result_dir, remaining_records)
-        append_log_line(result_dir / "remove_label_list.txt", remove_key_list)
+        with open(f'{args.path}/{args.task}/{args.llama_model}/result/remove_label_list.txt', 'a') as the_file:
+            the_file.write(str(remove_key_list) + '\n')
 
-        final_add_label = self_training(args, result_dir, iter_index)
-        append_log_line(result_dir / "add_label_list.txt", final_add_label)
+        final_add_label = self_training(args, iter_index)
 
-        augmented_records = remaining_records + [build_label_record(name=label) for label in final_add_label]
-        write_label_space_records(result_dir, augmented_records)
+        with open(f'{args.path}/{args.task}/{args.llama_model}/result/add_label_list.txt', 'a') as the_file:
+            the_file.write(str(final_add_label) + '\n')
+
+        with open(f'{args.path}/{args.task}/{args.llama_model}/result/update_labelspace.txt', 'a') as the_file:
+            for label in final_add_label:
+                the_file.write(label + '\n')
         print(final_add_label)
 
-        major_label_list = label_deletion(
-            major_label_list,
-            text_sorted_dic,
-            args.majority_num,
-            args.max_majority_num,
-        )
-        next_records = [record for record in augmented_records if record["name"] not in major_label_list]
-        write_label_space_records(result_dir, next_records, iter_index + 1)
-        append_log_line(result_dir / "majority_label_list.txt", major_label_list)
-        print(major_label_list)
+        new_label_space = label_space + final_add_label
 
-        zero_shot_training(args, result_dir, iter_index, args.data_dir, document_size)
+        #delete majority label
+        major_label_list = label_deletion(major_label_list, text_sorted_dic, args.majority_num, args.max_majority_num)
+        for label in major_label_list:
+            if label in new_label_space:
+                new_label_space.remove(label)
+        write_to_new_label_space(args, new_label_space, iter_index)
 
+        with open(f'{args.path}/{args.task}/{args.llama_model}/result/majority_label_list.txt', 'a') as the_file:
+            the_file.write(str(major_label_list) + '\n')
 
+        print(major_label_list)        
+
+        zero_shot_training(args, iter_index, args.data_dir, document_size)
+
+    
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--path", type=str, default="../../datasets")
     parser.add_argument("--data_dir", type=str, default="train_texts_split_50.txt")
-    parser.add_argument("--keyphrase_dir", type=str, default="llama2_label_50.txt")
-    parser.add_argument("--task", type=str, default="AAPD")
-    parser.add_argument("--llama_model", type=str, default="llama2")
-    parser.add_argument("--result_dir", type=str, default="result")
-    parser.add_argument("--run_name", type=str, default="")
+    parser.add_argument("--keyphrase_dir", type=str, default="deepseek_chat_label_50.txt")
+    parser.add_argument("--task", type=str, default='AAPD')
+    parser.add_argument("--llama_model", type=str, default='deepseek_chat')
     parser.add_argument("--tail_set_size", type=int, default=500, choices=[500, 1000, 1500])
     parser.add_argument("--majority_num", type=int, default=350, choices=[350, 400, 500, 650])
     parser.add_argument("--max_majority_num", type=int, default=5, choices=[5, 10])
-    parser.add_argument("--min_label_frequency", type=int, default=6)
     parser.add_argument("--sim_threshold", type=float, default=0.55, choices=[0.55, 0.60, 0.65])
-    parser.add_argument("--internal_dedup_threshold", type=float, default=0.70)
     parser.add_argument("--max_add_label", type=int, default=10, choices=[10, 15, 20])
-    parser.add_argument("--min_uncertain_support", type=int, default=3)
-    parser.add_argument("--min_global_frequency", type=int, default=15)
-    parser.add_argument("--entropy_top_k", type=int, default=8)
-    parser.add_argument("--max_iterations", type=int, default=10)
-    parser.add_argument("--top_k", type=int, default=8)
-    parser.add_argument("--max_output_labels", type=int, default=3)
-    parser.add_argument("--score_threshold", type=float, default=0.5)
-    parser.add_argument("--relative_threshold", type=float, default=0.2)
-    parser.add_argument("--embedding_model", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
-    parser.add_argument("--embedding_device", type=str, default="cuda")
-    parser.add_argument("--embedding_batch_size", type=int, default=32)
-    parser.add_argument("--classifier_device", type=str, default="cuda")
-    parser.add_argument("--hypothesis_template", type=str, default="This example is about {}.")
     parser.add_argument("--model", type=str, default="MoritzLaurer/deberta-v3-large-zeroshot-v1.1-all-33")
     args = parser.parse_args()
 

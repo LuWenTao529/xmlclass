@@ -120,14 +120,14 @@ def main(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--path", type=str, default="../../datasets")
-    parser.add_argument("--data_dir", type=str, default="llama2/init_label_space.txt")
-    parser.add_argument("--keyphrase_dir", type=str, default="keyphrase_candidate/llama2_label_50.txt")
+    parser.add_argument("--data_dir", type=str, default="deepseek_chat/init_label_space.txt")
+    parser.add_argument("--keyphrase_dir", type=str, default="keyphrase_candidate/deepseek_chat_label_50.txt")
     parser.add_argument("--task", type=str, default='Amazon-531')
     parser.add_argument("--dynamic_iter", type=int, default=14000)
     parser.add_argument("--cluster_size", type=int, default=84, choices=[84, 143, 215, 422, 398])
     parser.add_argument("--cluster_model", type=str, default="GMM")
     parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--output_dir", type=str, default="llama2/tail_label.txt")
+    parser.add_argument("--output_dir", type=str, default="deepseek_chat/tail_label.txt")
     args = parser.parse_args()
 
     main(args)

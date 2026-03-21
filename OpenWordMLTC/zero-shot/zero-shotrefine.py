@@ -2,35 +2,46 @@ import json
 import numpy as np
 import jsonlines
 import copy
-from sentence_transformers import SentenceTransformer, util
-from openai import OpenAI
 import os
+os.environ.setdefault("USE_TF", "0")
+from sentence_transformers import SentenceTransformer, util
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
+from OpenWordMLTC.local_llm_utils import chat_completion, normalize_yes_no
 
 def call_gpt(ground_truth, prediction):
-    client = OpenAI()
     content = f"""Given that we have established matching pairs such as "\'Machine learning\' and \'artificial intelligence\'", 
     "\'Computational Geometry\' and \'Algebraic Geometry\'", "\'Physics and Society\' and \'Physics\'",
     "\'teether\' and \'baby_dental_care\'", "\'earn\' and \'earnings\'", "\'electrical_safety\' and \'electronics_troubleshooting\'", 
     "\'acq\' and \'acquisitions\'", "\'money-fx\' and \'monetary policy\'", when using util.dot_score to measure semantic similarity 
     between tokens, would you consider \'{ground_truth}\' and \'{prediction}\' as a matching pair in a text classification problem? 
     Please respond with \'Yes\' or \'No\'."""
-    completion = client.chat.completions.create(
-        # model="gpt-4-turbo-preview",
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "You are an expert in text classification, with specialized skills in discerning matching pairs for labels."},
-            {"role": "user", "content": content }
-        ]
+    result = chat_completion(
+        [
+            {
+                "role": "system",
+                "content": "You are an expert in text classification label matching. Answer only Yes or No.",
+            },
+            {"role": "user", "content": content},
+        ],
+        temperature=0.0,
+        max_tokens=8,
     )
-    return str(completion.choices[0].message.content)
+    return normalize_yes_no(result)
 
 def run_test(dataset, model_type, array_size, true_label_index, new_str):
-    with jsonlines.open(f'../../datasets/{dataset}/llama2/test_performance/zero_shot_keyword_test{model_type}.jsonl', 'r') as jsonl_f:
+    with jsonlines.open(f'../../datasets/{dataset}/deepseek_chat/test_performance/zero_shot_keyword_test{model_type}.jsonl', 'r') as jsonl_f:
         json_list = [obj for obj in jsonl_f]
-    with jsonlines.open(f'../../datasets/{dataset}/llama2/test_performance/zero_shot_text_test{model_type}.jsonl', 'r') as jsonl_f:
+    with jsonlines.open(f'../../datasets/{dataset}/deepseek_chat/test_performance/zero_shot_text_test{model_type}.jsonl', 'r') as jsonl_f:
         json_raw_list = [obj for obj in jsonl_f]
 
-    file1 = open(f'../../datasets/{dataset}/keyphrase_candidate/llama2_label_test_50.txt', 'r')
+    file1 = open(f'../../datasets/{dataset}/keyphrase_candidate/deepseek_chat_label_test_50.txt', 'r')
     keyword_docs = file1.readlines()
 
     count = 0
