@@ -116,7 +116,7 @@ def main(args):
     sorted_pair_list = sorted(pair_list, key=lambda x: x[1], reverse = True)
 
     refine_pair_list = []
-    with open(f'{args.path}/{args.task}/deepseek_chat/result/gpt_result.txt', 'w') as file:
+    with open(f'{args.path}/{args.task}/qwen3/result/gpt_result.txt', 'w') as file:
 
 
         while len(sorted_pair_list) > 0:
@@ -145,7 +145,7 @@ def main(args):
                     sorted_pair_list = [p for p in sorted_pair_list if ground_truth not in p[0] and prediction not in p[0]]
                     continue
         
-    with open(f'{args.path}/{args.task}/deepseek_chat/result/output_pairs.txt', 'w') as file:
+    with open(f'{args.path}/{args.task}/qwen3/result/output_pairs.txt', 'w') as file:
         #file.write( '*********' + args.model + '***************' + '\n')
 
         for item in refine_pair_list:
@@ -163,7 +163,7 @@ def main(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--path", type=str, default="../../datasets")
-    parser.add_argument("--data_dir", type=str, default="deepseek_chat/result")
+    parser.add_argument("--data_dir", type=str, default="qwen3/result")
     parser.add_argument("--task", type=str, default='AAPD')
     parser.add_argument("--model", type=str, default="pke")
     parser.add_argument("--output_dir", type=str, default="llama_label3_50.txt")

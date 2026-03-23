@@ -233,11 +233,11 @@ def main(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--path", type=str, default="../../datasets")
-    parser.add_argument("--data_dir", type=str, default="deepseek_chat/test_performance")
-    parser.add_argument("--keyphrase_dir", type=str, default="deepseek_chat_label_test_50.txt")
+    parser.add_argument("--data_dir", type=str, default="qwen3/test_performance")
+    parser.add_argument("--keyphrase_dir", type=str, default="qwen3_label_test_50.txt")
     parser.add_argument("--task", type=str, default='AAPD')
     parser.add_argument("--test_size", type=int, default=1000)
-    parser.add_argument("--output_dir", type=str, default="deepseek_chat/test_performance/MLClass_result.txt")
+    parser.add_argument("--output_dir", type=str, default="qwen3/test_performance/MLClass_result.txt")
     args = parser.parse_args()
 
     main(args)

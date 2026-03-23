@@ -165,7 +165,7 @@ def main(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--path", type=str, default="../../datasets")
-    parser.add_argument("--data_dir", type=str, default="deepseek_chat/result")
+    parser.add_argument("--data_dir", type=str, default="qwen3/result")
     parser.add_argument("--task", type=str, default='AAPD')
     parser.add_argument("--output_dir", type=str, default="iter_output_pairs_new.txt")
     args = parser.parse_args()

@@ -36,12 +36,12 @@ def call_gpt(ground_truth, prediction):
     return normalize_yes_no(result)
 
 def run_test(dataset, model_type, array_size, true_label_index, new_str):
-    with jsonlines.open(f'../../datasets/{dataset}/deepseek_chat/test_performance/zero_shot_keyword_test{model_type}.jsonl', 'r') as jsonl_f:
+    with jsonlines.open(f'../../datasets/{dataset}/qwen3/test_performance/zero_shot_keyword_test{model_type}.jsonl', 'r') as jsonl_f:
         json_list = [obj for obj in jsonl_f]
-    with jsonlines.open(f'../../datasets/{dataset}/deepseek_chat/test_performance/zero_shot_text_test{model_type}.jsonl', 'r') as jsonl_f:
+    with jsonlines.open(f'../../datasets/{dataset}/qwen3/test_performance/zero_shot_text_test{model_type}.jsonl', 'r') as jsonl_f:
         json_raw_list = [obj for obj in jsonl_f]
 
-    file1 = open(f'../../datasets/{dataset}/keyphrase_candidate/deepseek_chat_label_test_50.txt', 'r')
+    file1 = open(f'../../datasets/{dataset}/keyphrase_candidate/qwen3_label_test_50.txt', 'r')
     keyword_docs = file1.readlines()
 
     count = 0

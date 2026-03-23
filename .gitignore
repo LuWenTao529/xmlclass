@@ -1,0 +1,4 @@
+downloaded_datasets/
+.vscode/
+__pycache__/
+*.pyc

@@ -93,11 +93,11 @@ def main(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--path", type=str, default="../../datasets")
-    parser.add_argument("--data_dir", type=str, default="deepseek_chat/init_labelspace.txt")
+    parser.add_argument("--data_dir", type=str, default="qwen3/init_labelspace.txt")
     parser.add_argument("--task", type=str, default="AAPD")
     parser.add_argument("--lower_bound", type=float, default=0.80)
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
-    parser.add_argument("--output_dir", type=str, default="deepseek_chat/init_label_space.txt")
+    parser.add_argument("--output_dir", type=str, default="qwen3/init_label_space.txt")
     args = parser.parse_args()
 
     main(args)

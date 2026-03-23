@@ -65,7 +65,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--max_tokens", type=int, default=128)
-    parser.add_argument("--output_dir", type=str, default="deepseek_chat_label_50.txt")
+    parser.add_argument("--output_dir", type=str, default="qwen3_label_50.txt")
     args = parser.parse_args()
 
     main(args)
